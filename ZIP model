@@ -1,0 +1,54 @@
+
+model{
+  
+  # Priors ----------------------------------------------------------------------------------------------------------------------------
+  # delta is the probability of anyone fishing during an observation (so Delta[i] is the probability of getting a positive observation)
+  
+
+  d~dnorm(0,0.5)   
+
+  
+  for(i in 1:nstrata){
+    # lambda is the mean and variance of effort when anyone is fishing
+    L[i]~dnorm(0,1)  
+  }
+  
+  # Likelihood functions --------------------------------------------------------------------------------------------------------------
+  for(i in 1:nstrata)   # loop across strata
+  {
+    logit(delta[i])<-d
+    prob[i]<-1-delta[i]  # prob[i] is the probability of getting a zero in an observation
+    nze[i]~dbin(prob[i],nzc[i])   # nze is number of zeros in a strata; nzc is number #of observations in a strata  
+  }
+  
+  for(i in 1:nstrata)   # times when a positive observation of effort
+  {
+    log(lambda[i])<-L[i]
+    for( j in 1:npobs[i] ){  # npobs is the number of positive observations 
+     pos[i,j]~dpois(lambda[i])  # pos is the number of anglers seen in each #observation
+   }
+  }
+  
+  # Estimation of effort  -------------------------------------------------------------------------------------------------------------
+  for(i in 1:nstrata)   # 
+  {
+    for( j in nzc[i])  # nzc is the total number of observations
+    {
+      eff[i,j]~dpois(lambda[i])  # estimated mean anglers for positive observations for each observation in a strata
+      Emean[i] <- delta[i]*eff[i, j] # estimated mean anglers in a strata (probability of getting a positive observation multiplied by the estimated mean anglers for positive observations)
+    }
+    E_strata[i] <- Emean[i]*sl[i]*nzc[i]/pi[i] # total effort in a strata - mean anglers per day multiplied by shift length (sl) and multiplied by number of shifts in that strata and divided by the probability of seleting that day for observation (pi)
+  }
+ tot_E <- sum( E_strata )  # get total effort for the season
+ sk_E <- sum(E_strata[5:8]) # get the effort from just the late strata for SK 
+ early_E <- sum(E_strata[1:4]) # early strata
+ 
+ bt_tc <- tot_E*bt_cr  # bull trout total catch 
+ bt_th <- tot_E*bt_hr  # bull trout total harvest 
+ rb_tc <- tot_E*rb_cr  # rainbow total catch 
+ rb_th <- tot_E*rb_hr  # rainbow total harvest 
+ sk_tc <- sk_E*sk_cr   # sockeye total catch 
+ sk_th <- sk_E*sk_hr   # sockeye total harvest 
+  
+}
+

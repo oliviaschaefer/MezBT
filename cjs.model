@@ -1,0 +1,56 @@
+model {
+
+# Priors and constraints
+for (i in 1:nind){
+   for (t in f[i]:(n.occasions-1)){
+      phi[i,t] <- exp( -(mean.m + ft[t]))
+      p[i,t] <- mean.p
+      } #t
+   } #i
+
+for(t in 1:(n.occasions-1)){
+  PHI[t] <- exp(-(mean.m+ft[t]))
+}
+#mean.logm ~ dnorm(0, 3)   # this is the prior for natural (non-fishing) mortality
+mean.m ~ dunif(0,1) #<- exp(mean.logm) # this puts mortality in regular space (out of log space)
+
+for (t in 1:nyears.tag){
+  #mean.logf[t] ~ dnorm(0,3)    # this is the prior for fishing mortality
+  ft[t] ~ dunif(0,1)#<- exp(mean.logf[t])   # this just converts the prior to regular space
+}
+
+mean.p ~ dunif(0, 1)           # Prior for mean recapture
+
+# this part calculates the number of tags available and captured in year-1
+HRT[1] <- tag[1]                         # HRT is number of high reward tags alive in the population
+cap_HRT[1] <- HRT[1] * ft[1]/(mean.m + ft[1]) * (1 - exp(-(mean.m + ft[1]))) * rr
+
+for (t in 2:nyears.tag){
+  # this part calculates the number of tags available and captured in all subsequent years
+  HRT[t] <- HRT[t-1] * exp( - (mean.m + ft[t-1]) ) + tag[t]
+  cap_HRT[t] <- HRT[t] * ft[t]/(mean.m + ft[t]) * (1 - exp(-(mean.m + ft[t]))) * rr
+}
+
+rr ~ dbeta(10, 2)  # rr: estimated reporting rate, assuming rr is not 100% 
+                   # beta dist to estimate 
+
+# Likelihood 
+for (i in 1:nind){
+   # Define latent state at first capture
+   z[i,f[i]] <- 1
+   for (t in (f[i]+1):n.occasions){
+      # State process
+      z[i,t] ~ dbern(mu1[i,t])
+      mu1[i,t] <- phi[i,t-1] * z[i,t-1]
+      # Observation process
+      y[i,t] ~ dbern(mu2[i,t])
+      mu2[i,t] <- p[i,t-1] * z[i,t]
+      } #t
+   } #i
+   
+   # compare our estimates of high-reward tags captured to the actual number captured
+   for (t in 1:nyears.tag){
+      tag_cap[t] ~ dpois(cap_HRT[t])  # Poisson takes the mean expected value
+   }
+}
+

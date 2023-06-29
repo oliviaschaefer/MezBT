@@ -1,0 +1,150 @@
+# Creel survey analysis for total effort. catch and harvest rates and total catch and harvest 
+# OS and BvP
+# March 1 2023 
+
+setwd("~/Desktop/Thesis/Analysis/Creel Survey ")
+
+library("R2jags")
+library("rjags")
+library("tidyverse")
+library("coda")
+library("lme4")
+library("readxl")
+library("lubridate")
+
+
+# Meziadin Lake 2022 Creel Survey 
+# Analysis guide from Pollock et al 1994 - Angler Survey Methods and their application in fisheries management - American Fisheries Society Special Publication 25 
+
+# Effort calculated through instantaneous roving counts and a ZIP model written in BUGS
+# Roving-Access designs and discussions in section 15.6.2 page 251
+
+# stratas: morning and afternoon, weekday and weekend/holidays, and pre and post sockeye opening (6 in total)
+
+# load in previous creel analysis and all data 
+source("Effort and Catch - decreased strata .R")
+
+# info needed for model: 
+#nstrata <- number of stratas
+
+effort.dat <- effort.dat %>% 
+  mutate(strata = paste0(season.strata, "-", day.type, "-", shift)) 
+nstrata <- length(unique(effort.dat$strata))
+
+#nzc <- number of observations in a strata 
+
+nzc <- effort.dat %>% 
+  group_by(strata) %>% 
+  summarise(nzc = n())
+
+# nze <- number of "zero" observations in a strata
+
+nze <- effort.dat %>% 
+  filter(anglers == 0) %>% 
+  group_by(strata) %>% 
+  summarise(nze = n())
+
+#npobs <- number of positive observations in a strata 
+
+npobs <- effort.dat %>% 
+  filter(anglers > 0) %>% 
+  group_by(strata) %>% 
+  summarise(npobs = n())
+
+# sl <- length of shift
+sl <- effort.dat %>% 
+  ungroup() %>% 
+  select(strata, shift.length) %>% 
+  unique()
+  
+
+# pi <- prob of selecing that strata 
+
+pi <- effort.dat %>% 
+  ungroup() %>% 
+  select(strata, pi) %>% 
+  unique()
+
+# catch and harvest rates for all 3 fish species 
+
+# bull trout:
+bt_cr <- complete.catch.rates %>% 
+  filter(species == "BT",
+         status == "caught") %>% 
+  select(catchRate)
+bt_cr <- bt_cr[1, 1]
+
+bt_hr <- complete.catch.rates %>% 
+  filter(species == "BT",
+         status == "harvest") %>% 
+  select(catchRate)
+bt_hr <- bt_hr[1, 1]
+
+# rainbow trout:
+rb_cr <- complete.catch.rates %>% 
+  filter(species == "RB",
+         status == "caught") %>% 
+  select(catchRate)
+rb_cr <- rb_cr[1, 1]
+
+rb_hr <- complete.catch.rates %>% 
+  filter(species == "RB",
+         status == "harvest") %>% 
+  select(catchRate)
+rb_hr <- rb_hr[1, 1]
+
+# sockeye:
+sk_cr <- complete.catch.rates %>% 
+  filter(species == "SK",
+         status == "caught") %>% 
+  select(catchRate)
+sk_cr <- sk_cr[1, 1]
+
+sk_hr <- complete.catch.rates %>% 
+  filter(species == "SK",
+         status == "harvest") %>% 
+  select(catchRate)
+sk_hr <- sk_hr[1, 1]
+
+######## Running model: 
+
+# need data in a list form 
+
+data <- merge(nzc, npobs, all = T)
+data <- merge(data, pi)
+data <- merge(data, nze)
+data <- merge(data, sl)
+data$npobs <- data$npobs %>% 
+  replace_na(0)
+
+data <- list(nstrata = nstrata,
+             nzc = data$nzc,
+             npobs = data$npobs,
+             pi = data$pi,
+             nze = data$nze,
+             sl = data$shift.length,
+             bt_cr = bt_cr,
+             bt_hr = bt_hr,
+             rb_cr = rb_cr,
+             rb_hr = rb_hr,
+             sk_cr = sk_cr,
+             sk_hr = sk_hr)
+
+# bundle intial values 
+inits <- function(){list("L" = abs(rnorm(8, 0, 1)),
+              "d" = abs(rnorm(1, 0, .5)))}
+
+# parameters monitored
+params <- c("E_strata", "tot_E", "L", "d", "sk_E", "bt_th", "bt_tc", "rb_th", "rb_tc", "sk_th", "sk_tc", "Emean", "early_E")
+
+# MCMC settings
+ni <- 11000
+nt <- 10
+nb <- 1000
+nc <- 3
+
+# call jags from R 
+zip.model <- jags(data = data, inits = inits, parameters.to.save = params, model.file = "zip-effort.jags", n.chains = nc, n.thin = nt, n.iter = ni, n.burnin = nb, working.directory = getwd())
+
+
+print(zip.model, digits = 3)

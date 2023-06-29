@@ -1,0 +1,63 @@
+##### Functions Required for Cormack Jolly Seber Model 
+# from Byaesian Population Analysis (Chapter 7)
+
+# 1: Create Capture History Matrix 
+# define function to simulate a capture-history (CH) matrix 
+simul.cjs <- function(PHI, P, marked){
+  n.occasions <- dim(PHI)[2]+1
+  CH <- matrix(0, ncol = n.occasions, nrow = sum(marked))
+  # define a vector with the occasions of marking 
+  mark.occ <- rep(1:length(marked), marked[1:length(marked)])
+  # fill in the CH matrix
+  for(i in 1:sum(marked)){
+    CH[i, mark.occ[i]] <- 1 # write a 1 at the release occasions
+    if(mark.occ[i] == n.occasions) next
+    for(t in (mark.occ[i] + 1):n.occasions){
+      # bernoulli trial: does individual survive occasion?
+      sur <- rbinom(1, 1, PHI[i, t-1])
+      if(sur==0) break # if dead, move to next individual
+      # bernoulli trial: is individual recaptured?
+      rp <- rbinom(1, 1, P[i, t-1])
+      if(rp == 1) CH[i, t] <- 1
+    } # t
+  } # i
+  return(CH)
+}
+
+
+# 2: Create function to mark intitial values 
+# function to create a matrix of initial values for latent state z
+ch.init <- function(ch, f){
+  for(i in 1:dim(ch)[1]){
+    ch[i, 1:f[i]] <- NA}
+  return(ch)
+}
+
+
+
+# 3: initial values 
+#*** Creating known z from capture histories (addition to text book from the word doc translation to jags)
+# Using this instead of one above 
+
+known.state.cjs <- function(ch){
+  state <- ch
+  for(i in 1:dim(ch)[1]){
+    n1 <- min(which(ch[i, ]==1))
+    n2 <- max(which(ch[i, ]==1))
+    state[i, n1:n2] <- 1
+    state[i, n1] <- NA
+  }
+  state[state==0] <- NA
+  return(state)
+}
+
+
+# 4: identify first occasion of marking
+# create the vector with the first occasion of marking 
+get.first <- function(x) min(which(x != 0))
+
+
+# 5: bundle intitial values 
+# function to create 
+
+

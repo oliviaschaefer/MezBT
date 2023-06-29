@@ -1,0 +1,160 @@
+#### CJS model with Meziadin Lake Data 
+
+# required packages
+library("R2jags")
+library("rjags")
+library("tidyverse")
+library("coda")
+library("lme4")
+library("readxl")
+
+# set working directory 
+setwd("~/Desktop/Thesis/Analysis/CJS with data/CJS models")
+
+# source required functions 
+source("CJS.model.functions.R")
+# source model 
+source("CJS.model.20221115.R")
+
+
+########################################################################
+#mez.capture.history <- read.csv("~/Desktop/Thesis/Mez Data/telem.matrix.csv")
+## ^ not using this because doesnt know a dead fish 
+# can try and code this later but seems too objective to code 
+
+#### Old capture history into a matrix:
+#CH <- mez.capture.history %>% 
+#select(-Transmitter)
+#CH <- data.matrix(CH)
+
+
+# instead make from data sheets 
+mez.dat.acoustic <- read_xlsx("~/Desktop/Thesis/Mez Data/Mez Data - tidy .xlsx", sheet = "Acoustic Tags")
+
+mez.dat.hrt <- read_xlsx("~/Desktop/Thesis/Mez Data/Mez Data - tidy .xlsx", sheet = "Reward Tags")
+
+
+# remove tag 32585 (post tagging mort)
+mez.dat.acoustic <- mez.dat.acoustic %>% 
+  filter(Transmitter != "32570") %>% 
+  filter(Transmitter != "32579") %>% 
+  filter(Transmitter != "32585") %>% 
+  filter(Transmitter != "32653") %>% 
+  filter(Transmitter != "32657") %>% 
+  filter(Transmitter != "32595b") #%>% 
+  #filter(Transmitter != "32641b")  # not a p0st-release mortality but harvested 5 days after tagged 
+
+### New making a matrix: 
+CH <- mez.dat.acoustic %>% 
+  select(seen_2017, seen_2018, seen_2019, seen_2020, seen_2021, seen_2022)
+CH <- data.matrix(CH)
+
+# now create a vector withthe occasion of marking 
+get.first <- function(x) min(which(x != 0))
+f <- apply(CH, 1, get.first)
+
+# Fishing mortality data (reward tag returns)
+# inputting data manually:
+# Tags released by year:
+year <- c("2017", "2018", "2019", "2020", "2021", "2022")
+nyears.tag = length(year)
+
+
+# getting data from the data sheet: 
+mez.dat.hrt <- mez.dat.hrt %>% 
+  filter(Floy_colour == "Y") %>% 
+  select(tag_returned, tag_return_date, Capture_date)
+
+mez.dat.hrt$tag_return_date <- as.Date(mez.dat.hrt$tag_return_date)
+mez.dat.hrt$tag_return_date <- format(mez.dat.hrt$tag_return_date, 
+                                      format = "%Y")
+mez.dat.hrt$Capture_date <- as.Date(mez.dat.hrt$Capture_date)
+mez.dat.hrt$Capture_date <- format(mez.dat.hrt$Capture_date, format = "%Y")
+mez.dat.hrt <- mez.dat.hrt %>% 
+  filter(Capture_date >= 2017) 
+
+# get list of years 
+#year <- mez.dat.hrt %>% 
+#  select(Capture_date) %>% 
+#  unique()
+#year <- as.vector(year)
+
+# get number of years 
+#n.years.tag <- length(year)
+
+# get number of telem tags out each year 
+tag.out <- mez.dat.hrt %>% 
+  group_by(Capture_date) %>% 
+  summarise(out = n()) %>% 
+  add_row(Capture_date = "2022", out = 0) 
+
+
+
+# tags returned every year 
+tag_cap <- mez.dat.hrt %>% 
+  group_by(tag_return_date) %>% 
+  summarise(cap = n()) %>% 
+  filter(!is.na(tag_return_date)) 
+
+# calculate net number out every year
+
+tag <- NULL
+tag <- vector()
+for(i in 1:length(tag.out$out)){
+  tag[i] <-  ifelse(i == 1, (tag.out$out[i]-tag_cap$cap[i]), (tag[i-1]+tag.out$out[i]-tag_cap$cap[i]))
+}
+
+## tag is number of tags available every year 
+# then make tag_cap an integer
+tag_cap <- as.integer(tag_cap$cap)
+
+
+
+# bundle data 
+jags.data <- list(y = CH, 
+                  f = f, 
+                  nind = dim(CH)[1], 
+                  n.occasions = dim(CH)[2], 
+                  nyears.tag = nyears.tag, 
+                  tag = tag, 
+                  tag_cap = as.integer(tag_cap),
+                  tag.out = as.integer(tag.out$out))  # this needs to be an integer for dpois to work (it needs to fit to integer data, just like Binomial)
+
+
+# estimates for initial values:
+m_init <- 0.3
+f_init <- c(0.19, 0.101, 0.07, 0.037, 0.017)
+p_init <- rep(0.4, nyears.tag-1)
+
+# bundle intial values 
+inits <- function(){
+  list(mean.m = rnorm(1, m_init, 0.01), 
+       ft = rnorm(length(year), f_init, 0.01), 
+       mean.p = rnorm(1, mean(p_init), 0.01), 
+       z = known.state.cjs(CH))
+}
+
+
+# parameters monitored
+parameters <- c("mean.p", "mean.m", "ft", "cap_HRT","HRT","PHI", "tag_cap")
+
+
+# MCMC settings
+ni <- 6000
+nt <- 6
+nb <- 1000
+nc <- 3
+
+# call jags from R 
+CJS.model <- jags(data = jags.data, inits = inits, parameters.to.save = parameters, model.file = "cjs-c-c.jags", n.chains = nc, n.thin = nt, n.iter = ni, n.burnin = nb, working.directory = getwd())
+
+print(CJS.model, digits = 3)
+
+
+################################################################################
+###################### END OF MODELLING   ######################################
+################################################################################
+
+
+
+

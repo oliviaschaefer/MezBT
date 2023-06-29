@@ -1,0 +1,443 @@
+# Meziadin Lake BT simulation model functions 
+# OS and BvP 2023
+
+# fucntions included:
+  #1:  simModelBase - creates base for models 
+  #2:  simModelFishDyn - creates the dynamics fishing model as well the initial regulations and proposed regulations equilbirum models 
+  #3:  Find_MSY - finds fmsy and bmsy for the initial and proposed equilibrium models 
+  #4:  Add_MSY - calculates F/FMSY and B/BMSY for the fishery dyanmics model 
+
+# function to create the base of all simulation models 
+simModelBase <- function(pars, sizelim){
+  
+  Linf     <- pars[,"Linf"]
+  K        <- pars[,"K"]
+  M        <- pars[,"M"]
+  Finit    <- pars[,"Finit"]
+  amat     <- pars[,"amat"]
+  bmat     <- pars[,"bmat"]
+  wmat     <- pars[,"wmat"]
+  asel     <- pars[,"asel"]
+  bsel     <- pars[,"bsel"]
+  dismort  <- pars[,"dismort"]
+  R0       <- pars[,"R0"]
+  reck     <- pars[,"reck"]
+  
+  # begin function for the equilibrium data set here 
+  # calculate length from length of age 
+  length <- Linf-Linf*exp(-outer(K,age,'*'))
+  # calculate weight from length 
+  weight <- 0.00001*length^3
+  # calculate maturity (probability of a fish in this age class being mature)
+  maturity <- 1/(1+exp(-(length-bmat)/amat))
+  #fecundity 
+  fecundity <- matrix(pmax(0,((length/Linf)^3)-wmat),nrow=nrep)
+  # calculate selectivity
+  selectivity <- 1/(1+exp(-((length-bsel)/asel)))
+  # create line for the proportion of this age group that is over the 1 over size limit
+  overlim <- pnorm(length, sizelim, sizelim*0.1, TRUE)
+  
+  ## calculate survivorship 
+  # survivorship at age 1 is always 1 
+  lx <- matrix(nrow=nrep,ncol=nage)
+  lx[,1] <- 1
+  # add in the rest of survivorship 
+  for (i in 2:nage) {
+    lx[,i] <- lx[,i-1]*exp(-M)
+  }
+  # adjust survivorship for age 10 because to be 10+ 
+  lx[,A] <- lx[,A]/(1-exp(-M))
+  
+  # calculate surivorship with fishing 
+  lxF <- matrix(nrow=nrep,ncol=nage)
+  # mark age = 1 as 1
+  lxF[,1] <- 1
+  # fill in for rest of the ages
+  for (i in 2:nage){
+    lxF[,i] <- lxF[,i-1]*exp(-(M+Finit*selectivity[,i-1]*(1+(1-pharvest)*dismort)))
+  }
+  # adjust age = 10 to include 10+ 
+  lxF[,A] <- lxF[,A-1]*exp(-(M+Finit*selectivity[,A-1]*(1+(1-pharvest)*dismort)))/(1-exp(-(M+Finit*selectivity[, A]*(1+(1-pharvest)*dismort))))
+  
+  
+  out <- list(
+    length      = length,
+    weight      = weight,
+    maturity    = maturity,
+    fecundity   = fecundity,
+    selectivity = selectivity,
+    overlim     = overlim,
+    lx          = lx,
+    lxF         = lxF)
+  
+  return(out)
+} #simModelBase()
+  
+  
+  ## 2: set up fishing equilibrium function, that also works as the finishing dynamics function depending on phase. 
+simModelFishDyn <- function(PHASE=c("sim","initial","proposed"), pars,
+                                    Ft=NULL, propbaglimit, propsizelim){
+  # PHASE can be either 
+  #    (1) initial: simulates to equilibrium under current regulations
+  #    (2) proposed: simulates to equilibrium under proposed regulations
+  #    (3) sim: simulates for the next 28 years (under initial for the first 8 then under proposed for 20)
+  # Ft is a posterior matrix (nrep x year), 
+  # propbaglimit and propsizelimit is a vector (1:28 for simulation years) 
+  #    for what you want to change bag and limits to
+  
+  Linf     <- pars[,"Linf"]
+  K        <- pars[,"K"]
+  M        <- pars[,"M"]
+  Finit    <- pars[,"Finit"]
+  amat     <- pars[,"amat"]
+  bmat     <- pars[,"bmat"]
+  wmat     <- pars[,"wmat"]
+  asel     <- pars[,"asel"]
+  bsel     <- pars[,"bsel"]
+  dismort  <- pars[,"dismort"]
+  R0       <- pars[,"R0"]
+  reck     <- pars[,"reck"]
+  
+  nyearinit <- 8
+  nyearprop <- 20
+  nyeardyn <- nyearinit + nyearprop
+  
+  nyear <- switch(PHASE,
+                  sim=nyeardyn,
+                  initial=nyearSim,
+                  proposed=nyearSim)
+  year <- seq(1, nyear) # set years 
+  baglim <- switch(PHASE,
+                   sim=propbaglimit,
+                   initial=rep(propbaglimit[1],nyearSim),
+                   proposed=rep(propbaglimit[nyeardyn],nyearSim))
+  sizelim <- switch(PHASE,
+                    sim=propsizelim,
+                    initial=rep(propsizelim[1],nyearSim),
+                    proposed=rep(propsizelim[nyeardyn],nyearSim))
+  nF <- ifelse( !is.null(Ft),
+                dim(Ft)[2],
+                nF <- 0
+  )
+
+  # get initialized variables
+  init <- simModelBase(pars, sizelim[1])
+  length <- init$length
+  weight <- init$weight
+  maturity <- init$maturity
+  fecundity <- init$fecundity
+  selectivity <- init$selectivity
+  overlim <- init$overlim
+  lx   <- init$lx
+  lxF  <- init$lxF
+  
+  
+  phiE     <- rowSums( lx * fecundity * maturity )
+  #phiE <- .3430208
+  BHA  <- reck/phiE      # beverton holt parameter A 
+  #rickerA <- 58.3055026
+  BHB  <- (reck-1)/(phiE*R0)   # beverton holt parameter B 
+  #rickerB <- 0.00873338
+  phiF     <- rowSums( lxF * fecundity * maturity )
+  #phiF <- 0.2700252
+  RF       <- (BHA*phiF-1)/(BHB*phiF)
+  #RF <- 1168.865
+  EF       <- phiF*RF
+  #EF <- 315.6230
+  vulninit <- RF * rowSums( lxF * selectivity ) #initial vulnerable population
+  #vulninit <- 766.8363
+  vuln0    <- R0 * rowSums( lx * selectivity ) # population size at F=0 (unfished)
+  #vuln0 <- 788.250783
+  q        <- CPUE0/vuln0 # catchability 
+  #q <- 0.00126863
+  CPUEinit <- q*vulninit  # initial CPUE (in this simulation)
+  #CPUEinit <- 0.9728329
+  Einit    <- pmax(Eres, (Finit*vulninit/CPUEinit/pharvest))  # initial effort (in this sim)
+  #Einit <- 78.82508
+  vulnoneover <- RF*rowSums( lxF * selectivity * overlim ) # number of vulnerable bull trout in the one over length group 
+  #vulnoneover <- 433.1205
+  CPUEover <- rowSums(lxF * selectivity * overlim)/rowSums(lxF * selectivity)*CPUE0 # CPUE for the one over regulation 
+  #CPUEover <- 0.49787633
+
+  # build abundance array
+  Nt <- array(0, dim=c(nrep,nyear,length(age)))
+  # build other arrays
+  eggs <- qvec <- cpue <- cpueMinSize <- effortHarv <- effortRel <- vulncap <- vulnMinSize <- Fvec <- Harvest <- 
+    array(0, dim=c(nrep,nyear))
+
+  #### set the initial year up:
+  
+  # set age 1 of first year as RF, and next as RF times that years lxF
+  Nt[,1,1:10] <- RF*lxF * exp(rnorm(1, mean = 0, sd = 0.5))
+  
+  # add on calculation for eggs for that year 
+  eggs[,1]    <- rowSums( Nt[,1,] * maturity * fecundity )
+  
+  # calculate vulncap first to be used in q calculation 
+  vulncap[,1] <- rowSums( Nt[,1,] * selectivity )
+  
+  # calculate q
+  qvec[,1]    <- q * ( vulncap[,1]/vuln0 )^(CPUEpow-1)
+  
+  # calculate CPUE 
+  cpue[,1]    <- CPUE0 * (vulncap[,1]/vuln0 )^CPUEpow
+
+  # set effort for first year as Einit
+  # if you're simulating dynamics and you have a posterior for F, calculate effort based on F[1]
+  if( nF > 0 ){
+    effortHarv[,1]  <- Ft[,1] / ( qvec[,1] * (vulncap[,1]/vuln0)^CPUEpow ) * pharvest
+  } else {
+    effortHarv[,1]  <- Einit*pharvest
+  }
+  
+  if( nF > 0 ){
+    effortRel[,1]  <- Ft[,1] / ( qvec[,1] * (vulncap[,1]/vuln0)^CPUEpow ) * 1-pharvest
+  } else {
+    effortHarv[,1]  <- Einit*1-pharvest
+  }
+  
+  # create F 
+  Fvec[,1]    <- effortHarv[,1] * qvec[,1] * (vulncap[,1]/vuln0)^CPUEpow
+  
+  # new (?) overlimit based on new size limit
+  overlim <- pnorm( length, sizelim[1], sizelim[1]*0.1, TRUE )
+  # calculate vulnMinSize
+  vulnMinSize[,1]  <- rowSums( Nt[,1,] * selectivity * overlim )
+  
+  # calculate CPUE of fish over minimum length
+  cpueMinSize[,1]  <- CPUEover * (vulnMinSize[,1]/vulnoneover)^CPUEpow
+  
+  ############## Set up the poisson calculations for retention calculations, retained catch, retention calculation over size limit, and vulnerability to retention 
+  
+  ##set up retention calculation to be using poisson distribution 
+  retained <- 0:10
+  limretain <- pmin(baglim[1], retained)
+  limretainml <- pmin(1, retained)
+
+  # set up the poisson probs for the numbers 
+  poissonProb <- array( data=NA, dim=c(nrep, nyear, length(retained)) )
+  pretain <- matrix(data=NA, nrow=nrep, ncol=nyear )
+  
+  # calculate probability of capture 0, 1, 2, ...
+  poissonProb[,1,] <- t( outer( X=retained, Y=cpue[,1], FUN=dpois ))
+  pretain[,1] <- rowSums( sweep( x=poissonProb[,1,], MARGIN=2, limretain, '*' ))/cpue[,1]
+
+  # calculate CPUEminsize and vulnminsize:
+  poissonProbml <- array( data=NA, dim=c(nrep, nyear, length(retained)) )
+  pretainml <- matrix( data=NA, nrow=nrep, ncol=nyear )
+  
+  # calculate probability of capturing 0, 1, 2, large fish
+  poissonProbml[,1,] <- t( outer( X=retained, Y=cpueMinSize[,1], FUN=dpois ))
+  pretainml[,1] <- rowSums( sweep( x=poissonProbml[,1,], MARGIN=2, limretainml, '*' ))/cpueMinSize[,1]
+
+  # calculate annual harvest
+  Ftemp            <- qvec[,1] * effortHarv[,1] * selectivity
+  Disctemp         <- (1-overlim) * (pretain[,1] + (1-pretain[,1]) * dismort)
+  Overtemp          <- overlim * ( pretainml[,1] + (1-pretainml[,1]) * dismort)
+  Harvest[,1]      <- rowSums( Nt[,1,] * (1 - exp( -Ftemp * ( (1-overlim) * pretain[,1] +
+                                                                overlim * pretainml[,1] ))) )
+  
+  # create F/FMSY
+  ## need to first set up an equil_current and an equil_proposed that will run for 300 years each, then can loop back and calculate this. 
+  
+  
+  
+  #### now loop over and fill in the rest of the years:
+  # loop over remaining years (columns)
+  # note: will get warnings but just saying that nas wre introduced when making the poissonprobs numeric in the the retained/regulations section (ignore)
+  for(t in 2:nyear){ 
+    
+    # set recruitment to age-1 based on eggs last year
+    Nt[,t,1]    <- eggs[,t-1] * BHA / (1+eggs[, t-1]*BHB) * exp(rnorm(1, mean = 0, sd = 0.5))
+    
+    # survive last years' fish
+    Nt[,t,2:A]  <- Nt[,t-1,1:(A-1)] * 
+                          exp( -M -Ftemp[,1:(A-1)] * (Disctemp[,1:(A-1)] + Overtemp[,1:(A-1)]))
+    Nt[,t,A]    <- Nt[,t,A] + Nt[,t-1,A] * 
+                          exp( -M -Ftemp[,A] * (Disctemp[,A] + Overtemp[,A]))
+                          
+    # add on calculation for eggs for that year 
+    eggs[,t]    <- rowSums( Nt[,t,] * maturity * fecundity )
+    
+    # calculate vulncap first to be used in q calculation 
+    vulncap[,t] <- rowSums( Nt[,t,] * selectivity )
+    
+    # calculate q
+    qvec[,t]    <- q * ( vulncap[,t]/vuln0 )^(CPUEpow-1)
+    
+    # calculate CPUE 
+    cpue[,t]    <- CPUE0 * (vulncap[,t]/vuln0 )^CPUEpow
+    
+    # set effort for first year as Einit
+    # if you're simulating dynamics and you have a posterior for F, calculate effort based on F[t]
+    if( nF > 0 & t <= nF ){
+      effortHarv[,t]  <- Ft[,1] / ( qvec[,t] * (vulncap[,t]/vuln0)^CPUEpow ) * pharvest
+    } else {
+      effortHarv[,t]  <- pmax( Eres, (1-Egrow)*effortHarv[,t-1] + Egrow*Einit * pharvest *
+                             ((1-wkeepharv)*vulncap[,t]/vulninit + wkeepharv*(baglim[t]/baglim[1])) )
+    }
+
+    
+    if( nF > 0 & t <= nF ){
+      effortRel[,t]  <- Ft[,1] / ( qvec[,t] * (vulncap[,t]/vuln0)^CPUEpow ) * 1-pharvest
+    } else {
+      effortRel[,t]  <- pmax( Eres, (1-Egrow)*effortRel[,t-1] + Egrow*Einit * 1-pharvest *
+                                 ((1-wkeeprel)*vulncap[,t]/vulninit + wkeeprel*(baglim[t]/baglim[1])) )
+    }
+    
+    
+    # create F 
+    Fvec[,t]    <- effortHarv[,t] * qvec[,t] * (vulncap[,t]/vuln0)^CPUEpow
+    
+    # new (?) overlimit based on new size limit
+    overlim <- pnorm( length, sizelim[t], sizelim[t]*0.1, TRUE )
+    
+    # calculate vulnMinSize
+    vulnMinSize[,t]  <- rowSums( Nt[,t,] * selectivity * overlim )
+    
+    # calculate CPUE of fish over minimum length
+    cpueMinSize[,t]  <- CPUEover * (vulnMinSize[,t]/vulnoneover)^CPUEpow
+    
+    ############## Set up the poisson calculations for retention calculations, retained catch, retention calculation over size limit, and vulnerability to retention 
+    
+    ##set up retention calculation to be using poisson distribution 
+    retained <- 0:10
+    limretain <- pmin(baglim[t], retained)
+    limretainml <- pmin(1, retained)
+    
+    # calculate probability of capture 0, 1, 2, ...
+    poissonProb[,t,] <- t( outer( X=retained, Y=cpue[,t], FUN=dpois ))
+    pretain[,t] <- rowSums( sweep( x=poissonProb[,t,], MARGIN=2, limretain, '*' ))/cpue[,t]
+    
+    # calculate probability of capturing 0, 1, 2, large fish
+    poissonProbml[,t,] <- t( outer( X=retained, Y=cpueMinSize[,t], FUN=dpois ))
+    pretainml[,t] <- rowSums( sweep( x=poissonProbml[,t,], MARGIN=2, limretainml, '*' ))/cpueMinSize[,t]
+    
+    # calculate annual harvest
+    Ftemp            <- qvec[,t] * effortHarv[,t] * selectivity 
+    Disctemp         <- (1-overlim) * ( pretain[,t] + (1-pretain[,t]) * dismort )
+    Overtemp          <- overlim * ( pretainml[,t] + (1-pretainml[,t]) * dismort )
+    Harvest[,t]      <- rowSums( Nt[,t,] * (1 - exp( -Ftemp * ( (1-overlim) * pretain[,t] +
+                                                                  overlim * pretainml[,t] ))) )
+  } #t
+
+  data2 <- list(
+    length        = length,
+    weight        = weight,
+    maturity      = maturity,
+    fecundity     = fecundity,
+    selectivity   = selectivity,
+    lx            = lx,
+    lxF           = lxF,
+    phiE          = phiE,
+    BHA           = BHA,
+    BHB           = BHB,
+    phiF          = phiF,
+    RF            = RF,
+    EF            = EF,
+    vulninit      = vulninit,
+    vuln0         = vuln0,
+    q             = q,
+    CPUEinit      = CPUEinit,
+    Einit         = Einit,
+    vulnoneover   = vulnoneover,
+    CPUEover      = CPUEover,
+    year          = year,
+    Nt            = Nt,
+    eggs          = eggs,
+    vulncap       = vulncap,
+    qvec          = qvec,
+    cpue          = cpue,
+    effortHarv    = effortHarv,
+    effortRel     = effortRel, 
+    Fvec          = Fvec,
+    overlim       = overlim,
+    vulnMinSize   = vulnMinSize,
+    cpueMinSize   = cpueMinSize,
+    retained      = retained,
+    limretain     = limretain,
+    limretainml   = limretainml,
+    poissonProb   = poissonProb,
+    pretain       = pretain,
+    poissonProbml = poissonProbml,
+    pretainml     = pretainml,
+    Harvest       = Harvest
+  )
+  
+  return(data2)
+} 
+  
+
+# function to find MSY and FMSY for each proposition management regulation 
+
+"find_MSY" <- function(pars, propbaglimit, propsizelim){
+  Fval <- seq(0,6,0.01) # create list of F's to test on
+  nF <- length(Fval)    # set length of F list 
+  Yinit <- Yprop <- matrix(nrow=nrep, ncol=nF)  # create empty objects for yields
+  M <- pars[, "M"]  # extract natural mortality values
+  
+  # fill in Yprop and Yinit, creating a matrix with columns as different values of F and 1000 rows which are the distributions of parameters 
+  for(i in 1:nF){
+    Fc <- rep(Fval[i],length(M))
+    newpars <- pars
+    newpars[,"Finit"] <- Fc
+
+    Yinit[,i] <- simModelFishDyn(PHASE="initial",pars = newpars,Ft=NULL,
+                                 propbaglimit = propbaglimit, propsizelim = propsizelim)$Harvest[,nyearSim]
+    
+    Yprop[,i] <- simModelFishDyn(PHASE="proposed",pars = newpars,Ft=NULL,
+                                 propbaglimit = propbaglimit,propsizelim = propsizelim)$Harvest[,nyearSim]
+  }
+  
+  # for both Yinit and Yprob, pull out FMSY and MSY (will both be distributions with length of nrep)
+  
+  Ypropfmsy <- Ypropmsy <- Yinitfmsy <- Yinitmsy <- as.numeric(vector())
+
+  for(i in 1:nrep){
+    # get msy and fmsy from initial yields 
+    Yinitmsy[i] <- max(Yinit[i, ], na.rm = TRUE)   # pulls out the max yield for each row
+    Yinitfmsy[i] <- Fval[which.max(Yinit[i, ])]    # indexes which column in each row has the max yield, and then indexes that over the vector of different F values to extract fmsy
+    
+    # get msy and fmsy from proposed yields 
+    Ypropmsy[i] <- max(Yprop[i, ], na.rm = TRUE)   
+    Ypropfmsy[i] <- Fval[which.max(Yprop[i, ])] 
+    
+  }
+  out <- list(Yinitmsy = Yinitmsy, 
+              Yinitfmsy = Yinitfmsy, 
+              Ypropmsy = Ypropmsy, 
+              Ypropfmsy = Ypropfmsy)
+
+  
+return(out)
+  
+}
+
+# function to add F/FMSY and B/BMSY to the dynamics sheet 
+"Add_FMSY" <- function(dynamicsdata, fmsydata){
+  # first 8 years of dynammics data run with the initial regulations and last 20 run with the proposed regulations so do first 8 years over the initial and the last 20 years over the proposed 
+  nrep <- nrow(dynamicsdata$Fvec)
+  nyear <- ncol(dynamicsdata$Fvec)
+  ffmsy <- bbmsy <- array(0, dim=c(nrep, nyear))
+  
+  # add on for first 10 years with initial regulations 
+  for(i in (1:8)){
+    ffmsy[, i] <- dynamicsdata$Fvec[, i]/fmsydata$Yinitfmsy[i]
+    bbmsy[, i] <- dynamicsdata$Harvest[, i]/fmsydata$Yinitmsy[i]
+  }
+  
+  # add on for the next ten years with proposed regulations 
+  for(i in 9:28){
+    ffmsy[, i] <- dynamicsdata$Fvec[, i]/fmsydata$Ypropfmsy[i]
+    bbmsy[, i] <- dynamicsdata$Harvest[, i]/fmsydata$Ypropmsy[i]
+  }
+  
+  out <- list(ffmsy <- ffmsy,
+              bbmsy <- bbmsy)
+  
+  return(out)
+}
+
+# then run scenarios as part of a decision table. When you do this, load your posterior estimates into Ft (years across columns) and it should use that to drive effort in the first several years
+
+

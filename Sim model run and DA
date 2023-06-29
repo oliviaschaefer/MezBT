@@ -1,0 +1,190 @@
+## Meziadin Lake Bull Trout simulation mdel 
+# OS June 14 2023 
+
+# set working directory
+setwd("~/Desktop/Thesis/Analysis")
+
+# source required scripts:
+rm(list = ls())
+source("~/Desktop/Thesis/Analysis/CJS with data/CJS.models.mez.data.R")
+source("~/Desktop/Thesis/Analysis/Creel Survey /ZIP model for effort.R")
+source("~/Desktop/Thesis/Analysis/Bio data analysis /Age length .R")
+source("~/Desktop/Thesis/Analysis/Simulation Model/Sim.Model - functions.R")
+
+
+# load posterior samples from previous analyses
+# CJS.model is output of CJS
+cjs.data <- attach.jags(CJS.model)
+M.samples <- cjs.data$mean.m        # extract the M posterior
+M.samples <- tail(M.samples, 1000)  # take only the last 1000 samples 
+Finit.samples <- cjs.data$ft[,1]    # get estimates of F from the first study year 
+Finit.samples <- tail(Finit.samples, 1000)
+
+#zip.model is output of zip 
+zip.data <- attach.jags(zip.model)
+effort.samples <- zip.data$tot_E              # extract the effort posterior
+effort.samples <- tail(effort.samples, 1000)  # take only the last 1000 samples
+
+# set parameters
+# set uncertain parameters (equal length)
+
+M <- M.samples[1:1000]
+nrep <- length(M)
+
+#Finit<- c(0.09, 0.1, 0.11)  # estimated fishing mortality - average form CJS 
+Finit <- Finit.samples[1:1000]
+
+# simulate reck estimates from Chudnow et al, 2019, BH est from table 8 
+
+reck <- rlnorm(nrep, 5.94, 0.57^(-.5))
+#quantile(reck, probs = c(0.025, 0.5, 0.975))
+
+Linf <- rep(vbgfLinf,nrep)      # Average max length - from vbgf 
+K    <- rep(vbgfK,nrep)     # Metabolic growth - from vbgf
+amat <- rep(10,nrep)      # standard deviation of the slope ** estimation
+bmat <- rep(40,nrep)      # average length at maturity ** estimation 
+wmat <- rep(0.3,nrep)     # weight at maturity ** estimation 
+asel <- rep(5,nrep)       # selectivity parameter ** estimated
+bsel <- rep(50,nrep)      # average length at harvest ** estimates 
+dismort <- rep(0.2,nrep)  # estimated discard mortality rate 
+R0   <- rep(12000,nrep)    # initial population size ** estimation 
+
+pars <- cbind( Linf, K, M, Finit, amat, bmat, wmat, asel, bsel, dismort, R0, reck )
+
+names(pars) <- c("Linf","K","M","Finit","amat","bmat","wmat","asel","bsel","dismort","R","reck")
+
+
+
+# parameters for fishing dynamics 
+Eres     <- 50   # effort for "resident" anglers (likely will continue effort even if catch/harvest rates decline)
+#wkeepharv <- 0.8   # weight that people assign to keeping a fish if they want to harvest
+#wkeeprel <- 1 - wkeepharv   # weight that people assign to keeping a fish if they are more into C&R
+Egrow    <- 0.5   # fastest rate that effort can grow from one year to the next 
+CPUE0    <- 3     # initial cpue at very beginning of fishery (Joe estimate)
+CPUEpow  <- 0.5   # imposes hyperstability on the population 
+#pharvest <- 0.5   # proportion of effort that habitually harvests (harvests at wkeepharv, assume rest of effort harvests at wkeeprel)
+
+# set controls (I think this can be deleted rn actually)
+baglimit <- 2 # set current bag limit 
+sizelim <- 50  # size limit for the one over regulation 
+baglimitml <- 1  # set bag limit for less the one over (1) 
+
+# set indices
+AR  <- 1
+A   <- 10
+age <- AR:A
+nage <- length(age)
+nyearSim <- 300    # set the number of years the simulation should run for 
+
+
+###############################################################################
+###############################################################################
+############################## DECISION ANALYSIS ##############################
+###############################################################################
+###############################################################################
+
+# Decision analysis steps: 
+  # 1) Identify available management actions 
+    # alter bag limit, and alter minimum one over size 
+    # so, consider 1 under and 1 over, 0 under and 1 over, (currently its 2 under and 1 over), and then those three combs for both a 50cm size limit and a 60 cm size limit (so 6 options in total)
+  # 2) Identify management objectives
+    # management objectives are to ensure population is being fished sustainable while ensuring harvest opportunities (would almost want to maximize sustainable harvest due to sk interactions but wont address here)
+    # will use F/FMSY and B/BMSY as objectives 
+  # 3) Identify alternative hypotheses regarding the uncertain states of nature 
+    # two uncertain parameters being used, regard angler behaviour: 1) pharvest and wkeep to characterize anglers
+  # 4) Assign prior probabilities to their alternative hypotheses 
+    # need from Joe 
+  # 5) Calculate outcomes for each management action-hypothesis combination 
+    #  run for loop to generate F/FMSY and B/BMSY matrices
+  # 6) Evaluate management options 
+    # 
+
+# run models base models 
+base <- simModelBase(pars = pars, sizelim = 50)
+sim.fishdyn <- simModelFishDyn("sim", pars = pars, propbaglimit = propbaglimit, propsizelim = propsizelim) 
+
+
+
+# uncertain states of nature 
+wkeepharv <- c(0.3, 0.5, 0.8)
+wkeeprel <- 1-wkeepharv
+pharv <- c(0.3, 0.5, 0.8)
+nstates <- length(wkeepharv)*length(pharv)
+
+# create vector of states of nature that correspond to decision analysis matrices 
+wkeepharvs <- c(rep(wkeepharv[1], 3), rep(wkeepharv[2], 3), rep(wkeepharv[3], 3))
+pharvs     <- c(rep(pharv, 3))
+
+# varying regulations 
+# first number is current and second is proposed 
+propbaglimit1 <- c(rep(2, 8), rep(2, 20))
+propbaglimit2 <- c(rep(2, 8), rep(1, 20))
+propbaglimit3 <- c(rep(2, 8), rep(0, 20))
+
+# list up the propbaglimits to correspond with the matrices
+propbaglimits <- list(propbaglimit1,
+                      propbaglimit2,
+                      propbaglimit3,
+                      propbaglimit1,
+                      propbaglimit2,
+                      propbaglimit3)
+
+propsizelim1 <- c(rep(50, 8), rep(50, 20))
+propsizelim2 <- c(rep(50, 8), rep(60, 20))
+
+# list up the propsizeilms to corespond with the matrices
+propsizelims <- list(propsizelim1,
+                     propsizelim1,
+                     propsizelim1,
+                     propsizelim2,
+                     propsizelim2,
+                     propsizelim2)
+
+# create decision analysis matrices (one for F/FMSY, one for B/BMSY and one for harvest opportunity)
+harvestopps <- FFMSY <- BBMSY <- (matrix(nrow = 6, ncol = nstates))
+rows <- c("bag2size50", "bag1size50", "bag0size50", 
+          "bag2size60", "bag1size60", "bag0size60")
+cols <- c("harv.3,p.3", "harv.3,p.5", "harv.3,p.8", 
+          "harv.5,p.3", "harv.5,p.5", "harv.5,p.8", 
+          "harv.8,p.3", "harv.8,p.5", "harv.8,p.8")
+
+rownames(BBMSY)       <- rows
+rownames(FFMSY)       <- rows
+rownames(harvestopps) <- rows
+
+colnames(BBMSY)       <- cols
+colnames(FFMSY)       <- cols
+colnames(harvestopps) <- cols
+
+# run loop that goes through the different scenarios for different regulations and different states
+# for FFMSY
+for(i in 1: ncol(FFMSY)){
+  # pull out the states of nature for each column 
+  wkeepharv <- wkeepharvs[i]
+  wkeeprel  <- 1-wkeepharv
+  pharv     <- pharvs[i]
+  
+  for(t in 1:nrow(FFMSY)){
+    # pull out the regulations for each row 
+    propbaglim  <- propbaglimits[[i]]
+    propsizelim <- propsizelims[[i]]
+    
+    # run the appropriate simulation 
+    temp <- Add_FMSY(dynamicsdata = simModelFishDyn("sim", pars = pars, propbaglimit = propbaglim, propsizelim = propsizelim), fmsydata = find_MSY(pars = pars, propbaglimit = propbaglim, propsizelim = propsizelim))
+    
+    # only have FFMSY and BBMSY for now, need to add the harvest opps once thats in the findfmsy function
+    # input the FFMSY into the FFMSY sheet 
+    # right now these are still the full distributions so need to figure out how to either list these ditributions into the matrix or first just find the mean 
+    FFMSY[i, t] <- temp[[1]][, 28]
+    BBMSY[i, t] <- temp[[2]][, 28]
+    # harvest opp will be 
+    #harvestopps[i, t] <- temp[[3]][, 28]
+    
+  }
+}
+
+
+install.packages("parallel")
+library("parallel")
+detectCores()
+# need to use mcapply to use forking parallel process

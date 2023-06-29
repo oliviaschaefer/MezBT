@@ -1,0 +1,686 @@
+# Meziadin Lake 2022 Creel Survey 
+# Analysis guide from Pollock et al 1994 - Angler Survey Methods and their application in fisheries management - American Fisheries Society Special Publication 25 
+
+# Effort calculated through instantaneous roving counts 
+# Roving-Access designs and discussions in section 15.6.2 page 251
+# Catch rates calculated through access point surveys, where the ratio of means was used for the complete trips 
+# stratas: morning and afternoon, weekday and weekend/holidays, and pre and post sockeye opening 
+
+library("tidyverse")
+library("lubridate")
+library("readxl")
+
+angler.count.head <- read_xlsx("~/Desktop/Thesis/Creel Survey /Data/Mez_creel_data.xlsx", sheet = "Roving Angler Count Header  ")
+
+angler.count <- read_xlsx("~/Desktop/Thesis/Creel Survey /Data/Mez_creel_data.xlsx", sheet = "Roving Angler Counts")
+
+surveys.head <- read_xlsx("~/Desktop/Thesis/Creel Survey /Data/Mez_creel_data.xlsx", sheet = "Individual Surveys Header")
+
+surveys.catch <- read_xlsx("~/Desktop/Thesis/Creel Survey /Data/Mez_creel_data.xlsx", sheet = "Individual Survey Catch Summary")
+
+###########################################
+###### counting number of interviews ######
+###########################################
+
+# Count number of interviews
+surveys.catch <- surveys.catch %>% 
+  mutate(angler.id = paste0(party, "-", angler))
+
+length(unique(surveys.catch$angler.id)) # count how many individual surveys there were 
+
+##############################
+#### Instantaneous Effort ####
+##############################
+## NOTE: this is calculating in angler hours but could change it to be rod hours also 
+
+# effort (by day) = instantaneous count of anglers multiplied by length of fishing period 
+
+
+## Combining strata types to reduce variation:
+# combine holidays and weekends 
+# combine early and mid stratas 
+
+angler.count.head <- angler.count.head %>% 
+  mutate(day.type = ifelse(day.type == "holiday", "weekend", day.type))
+
+# first create a data frame that summarizes counts by days 
+
+effort.dat <- angler.count.head %>% 
+  select(date,
+         day.type,
+         shift) 
+
+# gives day of count, day type and shift 
+
+effort.anglers <- angler.count %>% 
+  filter(`fishing.status (fishing/rods not fishing/non-fishing)` == "fishing") %>% 
+  group_by(date) %>% 
+  mutate(anglers = sum(people)) %>% 
+  select(date, anglers) # summarizes counts of anglers for each count day
+
+effort.anglers <- unique(effort.anglers) # remove duplicates (one sum of poeple per day)
+
+effort.dat <- merge(effort.dat, effort.anglers, by = "date", all = T) # bind
+
+effort.dat$anglers[is.na(effort.dat$anglers)] <- 0 #replace NAs (on days with no observed anglers) with a 0
+
+###################################3
+# calculating individual day effort: 
+
+# first need to set up stratification 
+
+# create strata for part of the summer (early/late)
+# early: May 13 -  Aug 1
+# late: Aug 2 - Sept 25 (this is when the sockeye fishery opened - it did close again on Sept 7 but we will consider it to be one strata)
+effort.dat <- effort.dat %>% 
+  mutate(season.strata = case_when(date <= "2022-08-01" ~ "early",
+                                   date >= "2022-08-01" ~ "late"
+                                   ))
+
+# create column with length of shift 
+# morning is always 6.5 
+# evening shift before July 29 is 7hrs, after July 29 is 6 hrs
+
+effort.dat <- effort.dat %>% 
+  mutate(shift.length = case_when(shift == "morning" ~ 6.5,
+                                  shift == "afternoon" | date <= "2022-07-29" ~ 7,
+                                  shift == "afternon" | date >= "2022-07-30" ~ 6))
+
+
+# calculating probability that fishing period i is included in the sample
+# will be based off prob of choosing that time of day and also prob of choosing that day 
+
+###### prob of choosing a day 
+# calculated by n1/N1 (number of days sampled/number of days in the sample period)
+
+# N1s: 
+
+# early: weekend/holidays: 28, weekdays: 55
+# late: weekend/holidays: 16, weekdays: 37
+
+season.strata <- c("early", "early", "late", "late")
+day.type <- c("weekend", "weekday", "weekend", "weekday")
+N1 <- c(28, 55, 16, 37) # hand calculated from schedule 
+N1 <- data.frame(season.strata, day.type, N1)
+
+#n1s:
+effort.dat %>% 
+  group_by(season.strata, day.type) %>% 
+  count() -> n1 # number of days in each group
+
+#creating prob of being selected for a specific day (pi1)
+day.pi <- merge(N1, n1, all = T) %>% 
+  mutate(pi1 = n/N1) %>% 
+  select(-n,
+         -N1)
+
+##### prob of selecting that time of day (morning or evening)
+n2 <- effort.dat %>% 
+  group_by(shift) %>% 
+  count() # number of each shift type 
+
+N2 <- length(effort.dat$shift) # number of all shifts 
+
+time.of.day.pi <- n2 %>% 
+  mutate(N2 = N2) %>% 
+  mutate(pi2 = n/N2) %>% 
+  select(-n,
+         -N2) # time of day pi is the probability of being either a morning or afternoon shift 
+
+effort.dat <- merge(effort.dat, day.pi)
+effort.dat <- merge(effort.dat, time.of.day.pi)
+effort.dat <- effort.dat %>% 
+  mutate(pi = pi1*pi2) # pi is time of day pi * type of day pi 
+
+## calculate daily effort by multiplying the number of anglers seen times the shift length 
+effort.dat <- effort.dat %>% 
+  mutate(daily.effort = anglers*shift.length)
+
+# Now calculate total effort 
+# divide the daily effort by the probability for that shift, and sum over the stratas
+total.effort <- effort.dat %>% 
+  mutate(total.effort = daily.effort/pi) %>% 
+  group_by(season.strata, day.type, shift) %>% 
+  summarise(strata.effort = sum(total.effort))
+
+# and sum 
+Total.effort <- sum(total.effort$strata.effort)
+print(Total.effort) # in angler hours 
+
+#######################
+## Just find the effort for the late strata for sockeye in the late strata
+# late season total effort:
+late.effort <- total.effort %>% 
+  filter(season.strata == "late")
+
+Total.late.effort <- sum(late.effort$strata.effort)
+
+
+#-----------------------------------------------------------------------
+# variance and standard error:
+# located in the roving-roving section of the book (section 15.6.1.5 which refers to page 234)
+# calculated by strata individually and then combined: 
+# Variance in a strata: var(e1) = s^2sub1/n1
+# variance total: var(E1) = N^2sub1 X var(e1)
+# s^2sub1 is 1/(n1 - 1)* the sum of (e1i - ehat1)^2  (i.e. sum of squares between each observation and mean)
+# N^2sub1 is the total amount of shift types in each strata 
+# SE(E1) = sqrt(var(E1))
+# and then ADD Var(E1) for each strata to get total Var(E)
+# and then total SE(E) is the sqrt of that 
+
+# so for each strata, N is N1 times 2 (amounts of those day types (N1) times 2 for either afternoon or morning)
+
+# add N1 to data sheet (amount of different day types in sample period)
+effort.dat <- merge(effort.dat, N1) %>% 
+  mutate(N = N1*2)
+
+# calculate n (number of different day types in sample period that were sampled)
+n <- effort.dat %>% 
+  group_by(shift, day.type, season.strata) %>% 
+  count()
+
+# calculate the average daily effort for each strata
+effort.dat <- effort.dat %>% 
+  group_by(shift, day.type, season.strata) %>% 
+  mutate(e.average = mean(daily.effort))
+
+# add n onto the data sheet 
+effort.var <- merge(n, effort.dat)
+effort.var <- unique(effort.var)
+
+# calculate the daily differences from daily effort to average effort for each strata, and them sum them for each strata
+effort.var <- effort.var %>% 
+  mutate(diff = (daily.effort-e.average)^2) %>%  # creating squares 
+  group_by(shift, day.type, season.strata) %>% 
+  mutate(all.diffs = sum(diff)) # sum of squares 
+
+# select out the columns we need and calculate s2, then calculate the total variance per strata 
+effort.var <- effort.var %>% 
+  select(shift, 
+         day.type,
+         season.strata,
+         n,
+         N,
+         all.diffs) %>% 
+  mutate(s2 = (1/(n-1)) * all.diffs) %>%  # all.diffs is sum of squares
+  mutate(var.e= s2/n) %>% 
+  unique()
+
+effort.var$var.e[is.na(effort.var$var.e)] <- 0 #replace NAs with a 0
+
+# calculate total variance from individual variances
+effort.var<- effort.var %>% 
+  mutate(Var.E = (N)^2 * var.e)
+# calculalte total standard error from total variance 
+effort.var <- effort.var %>% 
+  mutate(SE.E = sqrt(Var.E))
+
+total.effort.variance = sum(effort.var$Var.E, na.rm = TRUE)
+total.effort.standard.error = sum(effort.var$SE.E, na.rm = TRUE)
+print(total.effort.variance)
+print(total.effort.standard.error)
+######################
+## Variance and SE for just the late strata: 
+### now calcualting variance and standard error:
+late.variance <- effort.var %>% 
+  filter(season.strata == "late")
+
+total.late.effort.variance = sum(late.variance$Var.E, na.rm = TRUE)
+total.late.effort.standard.error = sum(late.variance$SE.E, na.rm = TRUE)
+# so standard error is 1029.184
+
+
+
+########################################################################
+
+#####################
+#### Catch Rates ####
+#####################
+
+surveys.catch <- surveys.catch %>% 
+  mutate(caught = kept+released)
+
+# using ratio of means for complete trips and means of ratios for incomplete trips 
+
+## complete trips: 
+# ratio of means: calculate mean catch and mean length and then divide
+
+sp <- unique(surveys.catch$species)
+catch.rates <- NULL
+catch.rates <- as.data.frame(catch.rates)
+for(i in 1:length(sp)){
+  c.ave <- NULL
+  l.ave <- NULL
+  temp <- NULL
+  ccr <- NULL
+  c.ave <- surveys.catch %>% 
+    filter(trip.type == "complete") %>% 
+    filter(species == sp[i]) %>%
+    summarise(mean(caught)) 
+  l.ave <- surveys.catch %>% 
+    filter(trip.type == "complete") %>% 
+    filter(species == sp[i]) %>%
+    summarise(mean(angler.hrs)) 
+  ccr <- c.ave/l.ave
+  temp$catchRate <- ccr[1, 1]
+  temp$species <- sp[i]
+  temp$method <- "complete"
+  temp$status <- "caught"
+  catch.rates <- rbind(catch.rates, temp)
+}
+
+## incomplete trips:
+# means of ratios: calcualte individual ratios and then average 
+# will also want to exclude trips less than 30 mins to remove chance bias (from Pollock et al 1994)
+# adding on to catch rate data frame above 
+
+for(i in 1:length(sp)){
+  temp <- NULL
+  icr <- NULL
+  t1 <- NULL
+  t1 <- surveys.catch %>% 
+    filter(species == sp[i]) %>% 
+    filter(trip.type == "incomplete") %>% 
+    mutate(catch.rate = caught/angler.hrs)
+  icr <- mean(t1$catch.rate)
+  temp$catchRate <- icr
+  temp$species <- sp[i]
+  temp$method <- "incomplete"
+  temp$status <- "caught"
+  catch.rates <- rbind(catch.rates, temp)
+}
+
+#######################
+#### Harvest Rates ####
+#######################
+
+## complete trips: 
+# ratio of means: calculate mean catch and mean length and then divide
+# find average harvest rate 
+for(i in 1:length(sp)){
+  temp <- NULL
+  h.ave <- NULL
+  l.ave <- NULL
+  h.ave <- surveys.catch %>% 
+    filter(trip.type == "complete") %>% 
+    filter(species == sp[i]) %>% 
+    summarise(mean(kept))
+  l.ave <- surveys.catch %>% 
+    filter(trip.type == "complete") %>% 
+    filter(species == sp[i]) %>%
+    summarise(mean(angler.hrs)) 
+  chr <- h.ave/l.ave
+  temp$catchRate <- chr[1, 1]
+  temp$species <- sp[i]
+  temp$method <- "complete"
+  temp$status <- "harvest"
+  catch.rates <- rbind(catch.rates, temp)
+}
+
+## incomplete trips:
+# means of ratios: calcualte individual ratios and then average 
+# will also want to exclude trips less than 30 mins to remove chance bias (from Pollock et al 1994)
+
+
+for(i in 1:length(sp)){
+  temp <- NULL
+  icr <- NULL
+  t2 <- NULL
+  t2 <- surveys.catch %>% 
+    filter(species == sp[i]) %>% 
+    filter(trip.type == "incomplete") %>% 
+    mutate(harvest.rate = caught/angler.hrs)
+  icr <- mean(t2$harvest.rate)
+  temp$catchRate <- icr
+  temp$species <- sp[i]
+  temp$method <- "incomplete"
+  temp$status <- "harvest"
+  catch.rates <- rbind(catch.rates, temp)
+}
+
+row.names(catch.rates) <- NULL
+#view(catch.rates)
+
+#################################
+#### calculate sockeye for just the late strata 
+late.sk <- surveys.catch %>% 
+  filter(species == "SK") %>% 
+  filter(date >= "2022-08-02") %>% 
+  filter(trip.type == "complete")
+
+sk.c.ave <- late.sk %>% 
+  summarise(mean(caught))
+sk.l.ave <- late.sk %>% 
+  summarise(mean(angler.hrs))
+sk.catch.rate <- sk.c.ave[1, 1]/sk.l.ave[1, 1]
+
+# calculating harvest rates
+sk.h.ave <- late.sk %>% 
+  summarise(mean(kept))
+sk.harvest.rate <- sk.h.ave[1, 1]/sk.l.ave[1, 1]
+
+##### and now replace in the above data set:
+
+catch.rates <- catch.rates %>% 
+  filter(species != "CO") %>% 
+  filter(method == "complete")
+
+catch.rates[3, "catchRate"] <- sk.catch.rate[1, 1]
+catch.rates[6, "catchRate"] <- sk.harvest.rate[1, 1]
+
+
+
+####################################################################
+######################################
+###### Total Catch and Harvest #######
+######################################
+# multiply all catch/harvest rates by effort:
+catch.rates <- as.data.frame(catch.rates)
+
+catch.rates <- catch.rates %>% 
+  filter(catchRate != "NaN")
+
+catch.rates$catchRate <- as.numeric(catch.rates$catchRate)
+  
+
+catch.rates <- catch.rates %>% 
+  mutate(Total.ch = ifelse(species == "SK", Total.late.effort*catchRate, Total.effort*catchRate))
+
+#view(catch.rates)
+## need to remove CO - not included in most of the catch/harvest sheet so numbers are being inflated 
+
+
+# need to figure out how to split up effort for campers/residents 
+### dont need to do this because basically no interviews from residents and so I guess we just ignore reisdents but then mention it at some point???? 
+
+# one way could be to determine (with stratification) the percentage of parties that reported being residents/launching from subdivision or private docks compared to campers in the roving surveys and then using those percentages to apply to the different methods 
+# if that happens will need to alter the incomplete rates so theyre also selecting for residents and not everyone 
+#vvv
+
+#freq <- surveys.head %>% 
+#  filter(location == "lake") %>% 
+#  count(access) %>% 
+#  mutate(freq = n/sum(n))
+
+#campers.effort <- sum(total.effort$strata.effort)*freq[1, 3]
+#private.effort <- sum(total.effort$strata.effort)*freq[2, 3]
+#subdiv.effort <- sum(total.effort$strata.effort)*freq[3, 3]
+# so this is giving an estimation of total effort for each angler type given the frequency that they appeared in the creel surveys - only the on lake ones because obviously no subdiv or private anglers will be captured in the campsite interviews 
+
+# look at differences between park and subdiv catch and harvest rates: 
+
+# so for now lets just use the complete catch rates beause clearly theyre different but we dont know the complete catch rates from subdiv/private people so we will just pretend they dont exist because they basically dont:
+surveys.head %>% 
+  group_by(access, location) %>% 
+  summarise(count = n())
+
+# so in total 49 interviews from park access, 1 from private and 2 from subdiv. 
+# could look at difference between the catch and harvest rates between these ones and see differences but really what are we going to do with the 1 private. 
+
+
+# catch rates very similar between complete and incomplete rates 
+# harvest rates very different (much higher for incomplete than for complete)
+
+surveys.catch.angler.type <- merge(surveys.catch, surveys.head, all.x = TRUE)
+
+surveys.catch.angler.type %>% 
+  filter(access == "subdiv") %>% 
+  select(c(kept, released))
+surveys.catch.angler.type %>% 
+  filter(access == "private")%>% 
+  select(c(kept, released))
+
+
+
+
+## No harvest reported for private or subdiv anglers - species caught for subdiv but non harvest (allegedly) (although rememeber there were two subdiv vessels - maybe 3 - that refused to interview)
+
+
+#----------------------------------------------------------------
+# Variance and Standard Error for total catch and total harvest: 
+
+# Catch
+# basically the same as the variance and SE for effort
+
+catch.dat <- merge(effort.dat, N1) %>% 
+  mutate(N = N1*2)
+
+n <- catch.dat %>% 
+  group_by(shift, day.type, season.strata) %>% 
+  count()
+
+# put in for loop so does this for all species and status
+#catch.dat <- catch.dat %>% 
+#  mutate(daily.catch = daily.effort*complete.catch.rate.BT) %>% 
+#  group_by(shift, day.type, season.strata) %>% 
+#  mutate(e.average = mean(daily.catch))
+
+
+
+complete.catch.rates <- catch.rates %>% 
+  filter(species != "CO") %>% 
+  filter(method == "complete")
+nch <- unique(complete.catch.rates$status)
+ns <- unique(complete.catch.rates$species)
+
+
+
+temp4 <- NULL
+temp4 <- as.data.frame(temp4)
+for (i in 1:length(nch)) {
+  print(i)
+  temp <- NULL
+  temp <- complete.catch.rates %>% 
+    filter(status == nch[i])
+  for(t in 1:length(ns)){
+    print(t)
+    temp2 <- NULL
+    temp2 <- temp %>% 
+      filter(species == ns[t])
+    ch.rate.sp <- NULL
+    ch.rate.sp <- temp2$catchRate[1]
+    temp3 <- NULL
+    temp3 <- catch.dat
+    temp3 <- temp3 %>% 
+      mutate(daily.catch = daily.effort*ch.rate.sp) %>% 
+      group_by(shift, day.type, season.strata) %>% 
+      mutate(e.average = mean(daily.catch)) %>% 
+      mutate(species = ns[t]) %>% 
+      mutate(status = nch[i])
+    temp4 <- rbind(temp4, temp3)
+  }
+}
+
+catch.dat <- temp4
+
+# remove other strata from sockeye 
+sk.catch.dat <- catch.dat %>% 
+  filter(species == "SK" & season.strata == "late")
+catch.dat <- catch.dat %>% 
+  filter(species != "SK")
+catch.dat <- rbind(catch.dat, sk.catch.dat)
+
+
+catch.dat <- merge(n, catch.dat)
+
+catch.dat <- catch.dat %>% 
+  mutate(diff = (daily.catch-e.average)^2) %>% 
+  group_by(shift, day.type, season.strata, species, status) %>% 
+  mutate(all.diffs = sum(diff)) 
+
+catch.var <- catch.dat %>% 
+  select(shift, 
+         day.type,
+         season.strata,
+         n,
+         N,
+         all.diffs, 
+         species, 
+         status) %>% 
+  mutate(s2 = (1/(n-1)) * all.diffs) %>% 
+  mutate(var.e= s2/n) %>% 
+  unique()
+
+catch.var<- catch.var %>% 
+  mutate(Var.E = (N)^2 * var.e)
+catch.var <- catch.var %>% 
+  mutate(SE.E = sqrt(Var.E))
+
+catch.var <- catch.var %>% 
+  ungroup()
+total.ch.var.se <- catch.var %>% 
+  group_by(species, status) %>% 
+  summarise(sum(catch.var$Var.E, na.rm = TRUE)) %>% 
+  summarise(sum(catch.var$SE.E, na.rm = TRUE)) 
+
+
+temp4 <- NULL
+for(i in 1:length(nch)){
+  temp1 <- NULL
+  temp1 <- catch.var %>% 
+    filter(status == nch[i])
+  for(t in 1:length(ns)){
+    temp2 <- NULL
+    temp2 <- temp1 %>% 
+      filter(species == ns[t])
+    temp3 <- NULL
+    temp3 <- temp2 %>% 
+      select(species, status, Var.E, SE.E) %>% 
+      mutate(Var.E = sum(temp2$Var.E, na.rm = TRUE)) %>% 
+      mutate(SE.E = sum(temp2$SE.E, na.rm = TRUE))
+    temp4 <- rbind(temp4, temp3)
+  }
+}
+temp4 <- unique(temp4)
+total.ch.var.se <- temp4
+print(total.ch.var.se)
+
+# combine with total catch amounts 
+complete.catch.rates <- catch.rates %>% 
+  filter(method == "complete")
+complete.catch.rates <- merge(complete.catch.rates, total.ch.var.se)
+
+#############################################################################
+############### Summary of Everything Important #############################
+#############################################################################
+
+print(Total.effort) # in angler hours 
+print(total.effort.variance) # total effort variance
+print(total.effort.standard.error) # total effort standard error 
+print(catch.rates)   # catch rates for species for both complete and incomplete methods, ignore CO (greater than 1 because only included when it was caught, if want info on CO fix data sheets but prob just ignore it)
+print(total.ch.var.se) # variance and standard error for all species total catch and harvest rates, only for the complete ones 
+print(complete.catch.rates) # complete method, catch and harvest rates, total, variance and standard error for all species and status 
+
+write.csv(complete.catch.rates, "~/Desktop/Thesis/Mez Data/complete.catch.rates.csv")
+
+#############################################################################
+################ Calculating sockeye catch and harvest from just the late (sockeye) opening time#######################################################
+#############################################################################
+
+###### to calculate effort:
+# first calculate daily effort 
+# calculate strata - day type and shift type and count how many of each kind (n1)
+# then N1 will be number of those day types in the sample period (number of those day types X2 for either morning or afternoon shift )
+# pi1 is prob of selecting that day type and pi2 is prob of selecting that shift (can just multiply it by .5 becasue 50% prob of being that time of day)
+# daily effort is then the number of anglers * the shift length 
+# then multiple daily effort by the daily pi 
+# then sum 
+
+# late season total effort:
+late.effort <- total.effort %>% 
+  filter(season.strata == "late")
+
+Total.late.effort <- sum(late.effort$strata.effort)
+
+
+### now calcualting variance and standard error:
+late.variance <- effort.var %>% 
+  filter(season.strata == "late")
+
+total.late.effort.variance = sum(late.variance$Var.E, na.rm = TRUE)
+total.late.effort.standard.error = sum(late.variance$SE.E, na.rm = TRUE)
+# so standard error is 1029.184
+
+
+##### now calculate catch and harvest rates from just the late strata:
+# calculating catch rates
+late.sk <- surveys.catch %>% 
+  filter(species == "SK") %>% 
+  filter(date >= "2022-08-02") %>% 
+  filter(trip.type == "complete")
+
+sk.c.ave <- late.sk %>% 
+  summarise(mean(caught))
+sk.l.ave <- late.sk %>% 
+  summarise(mean(angler.hrs))
+sk.catch.rate <- sk.c.ave[1, 1]/sk.l.ave[1, 1]
+
+# calculating harvest rates
+sk.h.ave <- late.sk %>% 
+  summarise(mean(kept))
+sk.harvest.rate <- sk.h.ave[1, 1]/sk.l.ave[1, 1]
+
+
+##### now total catch and harvest:
+total.sk.catch <- sk.catch.rate[1, 1]*Total.late.effort
+# total catch is 294
+total.sk.harvest <- sk.harvest.rate[1, 1]*Total.late.effort
+# total harvest is 176
+
+##### variance and standard error for total catch and harvest 
+# select out the late catch data 
+late.catch.dat <- catch.dat %>% 
+  filter(season.strata == "late")
+
+sk.catch.var <- late.catch.dat %>% 
+  mutate(daily.catch = daily.effort*sk.catch.rate[1,1]) %>% 
+  group_by(shift, day.type, season.strata) %>% 
+  mutate(e.average = mean(daily.catch))
+
+
+
+
+
+
+
+# total effort in late strata = 730.86 (with standard error of 1029.184)
+
+sockeye <- surveys.catch %>% 
+  filter(species == "SK") %>% 
+  filter(trip.type == "complete") %>% 
+  filter(date > 2022-08-01) 
+
+sk.c.ave <- sockeye %>% 
+  summarise(mean(caught))
+
+sk.h.ave <- sockeye %>% 
+  summarise(mean(kept))
+
+sk.l.ave <- sockeye %>% 
+  summarise(mean(angler.hrs))
+sk.catch.rate <- sk.c.ave/sk.l.ave
+sk.harvest.rate <- sk.h.ave/sk.l.ave
+
+###############################################################################
+
+### making plots: 
+# Total catch and harvest plots: 
+plot <- complete.catch.rates 
+plot$species <- recode(plot$species, "BT" = "Bull Trout", "RB" = "Rainbow Trout", "SK" = "Sockeye")
+
+
+ggplot(plot)+
+  geom_col(aes(x = species, y = Total.ch, fill= status), position = "dodge")+
+  geom_errorbar(aes(x = species, ymin = 0, ymax = `Total.ch`+`SE.E`, color = status), width = .1, position = position_dodge((width = .9)))+
+  labs(caption = "Error bars indicate standard error")+
+  scale_y_continuous("Total Catch or Harvest")+
+  scale_x_discrete("Species")+
+  scale_fill_manual("Caught/Harvest", values = c("lightblue", "lightgreen"))+
+  scale_color_manual(" ", values = c("black", "black"))+
+  theme_bw()+
+  theme(legend.position = "none")
+  
+
+###############################################################################
+
+

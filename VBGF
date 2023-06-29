@@ -1,0 +1,124 @@
+### VBF growth curves and analysis of biodata from Mez 
+
+setwd("~/Desktop/Thesis/Analysis/Bio data analysis ")
+library("tidyverse")
+library("readxl")
+
+
+#load data:
+oto.dat <- read_xlsx("~/Desktop/Thesis/Mez Data/oto-BCGov-Meziadin-J.DeGisi_QAQC.xlsx", sheet = 2)
+bio.dat <- read_xlsx("~/Desktop/Thesis/Creel Survey /Data/Mez_creel_data.xlsx", sheet = "Bio data")
+
+# edit oto.dat so that it can be merged with bio.dat
+colnames(oto.dat) <- oto.dat[16, ]
+oto.dat <- oto.dat %>% 
+  filter(!row_number() %in% c(1:17)) 
+
+# make oto.dat and bio.dat sample numbers match 
+colnames(oto.dat)[5] <- "sample#"
+oto.dat$`sample#` <- paste0("0", oto.dat$`sample#`)
+
+# merge data sets 
+oto.dat <- merge(oto.dat, bio.dat, all.x = TRUE, by = "sample#")
+vbgf <- oto.dat %>% 
+  select(Species,
+         Age,
+         fork.length.cm,
+         comments) %>% 
+  filter(Species == "BLTR") %>%
+  filter(!is.na(fork.length.cm))
+  
+vbgf$fork.length.cm <- as.numeric(vbgf$fork.length.cm)
+vbgf$Age <- as.numeric(vbgf$Age)
+
+#write_csv(vbgf, "~/Desktop/Thesis/Mez Data/VBGF.csv")
+
+# basic plot of age lengths 
+#ggplot(vbgf)+ 
+#  geom_point(aes(x = Age, y = fork.length.cm))+
+#  scale_x_continuous("Age")+
+#  scale_y_continuous("Fork Length")+
+#  theme_bw()
+
+
+
+################################################################################
+#### Doing VBGF 
+# Using solver on excel they say that Linf should be 62.6 and K should be 0.292
+set.seed(1234)
+
+# set initial values 
+K <- 0.3 # initial value of K 
+Linf <- 70 # initital value of Linf
+CV <- .1
+
+theta <- c(K, Linf)  # initial parameters
+age <- vbgf$Age
+fork.length <- vbgf$fork.length.cm
+
+# create function to use in optim 
+
+SSQ <- function(theta, x){
+  K <- theta[1]
+  Linf <- theta[2]
+  epsilon <- rep(0, length(age))
+  pred <- rep(0, length(age))
+  for(i in 1:length(age)){
+      pred[i] <- Linf-(Linf*exp(-K*(age[i])))
+      #epsilon[i] <- (fork.length[i] - pred[i])^2  # for sum of squares 
+      epsilon[i] <- dnorm(fork.length[i], pred[i], CV*pred[i]) 
+            # normdist like in excel 
+            # butnot working right now maybe get Brett to check, prob soething about logs 
+  }
+  ssq <- sum(epsilon)
+  return(ssq)
+}
+
+# run optim 
+out <- optim(par = theta, fn = SSQ, method = "BFGS", x = age, control=list(fnscale=-1))
+# note: control = list(fnsclae = -1) is to change so that optim will maximize the function which is what we want when using the normdist, but remove this for the sum of squares 
+
+
+K <- out$par[1]
+Linf <- out$par[2]
+
+vbgfK <- K
+vbgfLinf <- Linf
+
+print(K)
+print(Linf)
+
+# new plot 
+vbgf <- vbgf %>% 
+  mutate(pred = Linf-(Linf*exp(-K*(age))))
+
+#ggplot(vbgf)+ 
+#  geom_point(aes(x = Age, y = fork.length.cm), color = "black")+
+#  geom_point(aes(x = Age, y = pred), color = "darkgrey")+
+#  geom_line(aes(x = Age, y = pred), color = "darkgrey")+
+#  scale_x_continuous("Age")+
+#  scale_y_continuous("Fork Length (cm)")+
+#  theme_bw()
+
+# length frequency curves for each species: 
+
+# binning data into 5 cm long bins 
+
+bio.dat$fork.length.cm <- as.numeric(bio.dat$fork.length.cm)
+bio.dat <- bio.dat %>% 
+  mutate(binned.fl = round(fork.length.cm/5)*5)
+
+bio.dat <- bio.dat %>% 
+  filter(sp.code %in% c("BT", "RB", "RT")) %>% 
+  mutate(species = ifelse(sp.code == "BT", "Bull Trout",
+                          ifelse(sp.code == "RB", "Rainbow Trout",
+                                 ifelse(sp.code == "RT", "Rainbow Trout", "NA"))))
+
+#ggplot(data = bio.dat, aes(x = binned.fl))+
+#  facet_wrap(~species)+
+#  geom_histogram(stat = "count")+
+#  scale_x_continuous("Fork Length (cm)", breaks = pretty(bio.dat$binned.fl))+
+#  scale_y_continuous("Count")+
+#  theme_bw()
+
+
